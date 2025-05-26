@@ -10,6 +10,7 @@
 - 🌐 公开照片分享
 - 📊 仪表板统计
 - ☁️ 阿里云 OSS 存储
+- 🔑 管理员密码访问（无需登录查看所有照片）
 - 📖 完整的 OpenAPI 文档
 
 ## 技术栈
@@ -37,9 +38,12 @@ pip install -r requirements.txt
 cp env.example .env
 ```
 
-编辑 `.env` 文件，配置阿里云 OSS 信息：
+编辑 `.env` 文件，配置阿里云 OSS 信息和管理员密码：
 
 ```env
+# 管理员查看密码（用于无需登录查看所有照片）
+ADMIN_ACCESS_PASSWORD=your-admin-password-here
+
 # 阿里云OSS配置
 ALIYUN_ACCESS_KEY_ID=your-access-key-id
 ALIYUN_ACCESS_KEY_SECRET=your-access-key-secret
@@ -76,12 +80,13 @@ gunicorn -w 4 -b 0.0.0.0:5000 app:app
 - `POST /api/auth/login` - 用户登录
 - `POST /api/auth/logout` - 用户登出
 - `GET /api/auth/verify` - 验证 token
+- `POST /api/auth/verify` - 验证管理员密码
 
 ### 照片管理接口
 
-- `GET /api/photos` - 获取照片列表
+- `GET /api/photos` - 获取照片列表（支持管理员密码访问）
 - `POST /api/photos/upload` - 上传照片
-- `GET /api/photos/{id}` - 获取照片详情
+- `GET /api/photos/{id}` - 获取照片详情（支持管理员密码访问）
 - `PUT /api/photos/{id}` - 更新照片信息
 - `DELETE /api/photos/{id}` - 删除照片
 
@@ -98,6 +103,27 @@ gunicorn -w 4 -b 0.0.0.0:5000 app:app
 
 - 用户名: `admin`
 - 密码: `admin123`
+
+## 管理员密码访问
+
+系统支持通过管理员密码来访问所有照片（包括私有照片），无需用户登录。
+
+### 使用方法
+
+1. **在请求头中添加管理员密码：**
+   ```
+   X-Admin-Password: your-admin-password-here
+   ```
+
+2. **或者通过验证接口：**
+   ```bash
+   POST /api/auth/verify
+   {
+       "password": "your-admin-password-here"
+   }
+   ```
+
+详细使用说明请参考：[管理员密码访问功能使用指南](ADMIN_ACCESS_GUIDE.md)
 
 ## 支持的图片格式
 

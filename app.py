@@ -26,6 +26,7 @@ app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your-jwt-secret-key'
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
 app.config['UPLOAD_FOLDER'] = os.getenv('UPLOAD_FOLDER', 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 10485760))  # 10MB
+app.config['VIEW_PASSWORD'] = os.getenv('VIEW_PASSWORD', 'admin-view-password-123')  # 查看密钥
 
 # 初始化扩展
 db = SQLAlchemy(app)
@@ -50,6 +51,31 @@ ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif', 'webp'}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def verify_view_access():
+    """
+    验证查看访问权限
+    支持JWT Token或查看密钥两种方式
+    返回: (is_authorized, access_type)
+    """
+    # 首先尝试JWT验证
+    try:
+        from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
+        verify_jwt_in_request(optional=True)
+        current_user_id = get_jwt_identity()
+        if current_user_id:
+            return True, 'user'
+    except:
+        pass
+    
+    # 然后尝试查看密钥验证
+    view_password = request.headers.get('X-View-Password')
+    print(view_password)
+
+    if view_password and view_password == app.config['VIEW_PASSWORD']:
+        return True, 'viewer'
+    
+    return False, 'public'
 
 def get_file_size_string(size_bytes):
     """将字节数转换为可读的大小字符串"""
@@ -161,6 +187,18 @@ login_model = api.model('Login', {
     'password': fields.String(required=True, description='密码', example='password123')
 })
 
+# 查看密钥验证模型
+admin_verify_model = api.model('ViewKeyVerify', {
+    'password': fields.String(required=True, description='查看密钥', example='admin-view-password-123')
+})
+
+# 修改密码模型
+change_password_model = api.model('ChangePassword', {
+    'current_password': fields.String(required=True, description='当前密码', example='oldpassword123'),
+    'new_password': fields.String(required=True, description='新密码', example='newpassword123'),
+    'confirm_password': fields.String(required=True, description='确认新密码', example='newpassword123')
+})
+
 user_model = api.model('User', {
     'id': fields.Integer(description='用户ID'),
     'username': fields.String(description='用户名'),
@@ -174,6 +212,12 @@ login_response_model = api.model('LoginResponse', {
         'token': fields.String(description='JWT认证令牌'),
         'user': fields.Nested(user_model)
     }))
+})
+
+# 修改密码响应模型
+change_password_response_model = api.model('ChangePasswordResponse', {
+    'success': fields.Boolean(description='请求是否成功', example=True),
+    'message': fields.String(description='响应消息', example='密码修改成功')
 })
 
 # 照片相关模型
@@ -305,14 +349,58 @@ class Logout(Resource):
         }
 
 @auth_ns.route('/verify')
-class VerifyToken(Resource):
-    @api.doc(security='Bearer')
+class VerifyViewKey(Resource):
+    @api.expect(admin_verify_model)
     @api.response(200, 'Success')
+    @api.response(401, 'Unauthorized', error_model)
+    @handle_errors
+    def post(self):
+        """验证查看密钥"""
+        data = request.get_json()
+        
+        if not data or 'password' not in data:
+            return {
+                'success': False,
+                'error': {
+                    'code': 'MISSING_PASSWORD',
+                    'message': '请提供查看密钥',
+                    'details': '查看密钥是必需的'
+                }
+            }, 400
+        
+        view_password = app.config['VIEW_PASSWORD']
+        
+        if data['password'] == view_password:
+            return {
+                'success': True,
+                'message': '查看密钥验证成功',
+                'data': {
+                    'access_type': 'viewer',
+                    'permissions': ['view_all_photos'],
+                    'can_view_private': True
+                }
+            }
+        else:
+            return {
+                'success': False,
+                'error': {
+                    'code': 'INVALID_VIEW_KEY',
+                    'message': '查看密钥错误',
+                    'details': '请输入正确的查看密钥，验证失败只能查看公开图片'
+                }
+            }, 401
+
+@auth_ns.route('/change-password')
+class ChangePassword(Resource):
+    @api.doc(security='Bearer')
+    @api.expect(change_password_model)
+    @api.response(200, 'Success', change_password_response_model)
+    @api.response(400, 'Bad Request', error_model)
     @api.response(401, 'Unauthorized', error_model)
     @jwt_required()
     @handle_errors
-    def get(self):
-        """验证token有效性"""
+    def post(self):
+        """修改密码"""
         current_user_id = get_jwt_identity()
         user = User.query.get(int(current_user_id))
         
@@ -326,16 +414,88 @@ class VerifyToken(Resource):
                 }
             }, 401
         
-        return {
-            'success': True,
-            'data': {
-                'user': {
-                    'id': user.id,
-                    'username': user.username,
-                    'email': user.email
+        data = request.get_json()
+        
+        # 验证必需字段
+        if not data or 'current_password' not in data or 'new_password' not in data or 'confirm_password' not in data:
+            return {
+                'success': False,
+                'error': {
+                    'code': 'MISSING_FIELDS',
+                    'message': '缺少必需字段',
+                    'details': '请提供当前密码、新密码和确认密码'
                 }
+            }, 400
+        
+        current_password = data['current_password']
+        new_password = data['new_password']
+        confirm_password = data['confirm_password']
+        
+        # 验证当前密码
+        if not check_password_hash(user.password_hash, current_password):
+            return {
+                'success': False,
+                'error': {
+                    'code': 'INVALID_CURRENT_PASSWORD',
+                    'message': '当前密码错误',
+                    'details': '请输入正确的当前密码'
+                }
+            }, 400
+        
+        # 验证新密码长度
+        if len(new_password) < 6:
+            return {
+                'success': False,
+                'error': {
+                    'code': 'PASSWORD_TOO_SHORT',
+                    'message': '新密码太短',
+                    'details': '密码长度至少为6位'
+                }
+            }, 400
+        
+        # 验证新密码确认
+        if new_password != confirm_password:
+            return {
+                'success': False,
+                'error': {
+                    'code': 'PASSWORD_MISMATCH',
+                    'message': '新密码确认不匹配',
+                    'details': '新密码和确认密码必须一致'
+                }
+            }, 400
+        
+        # 检查新密码是否与当前密码相同
+        if check_password_hash(user.password_hash, new_password):
+            return {
+                'success': False,
+                'error': {
+                    'code': 'SAME_PASSWORD',
+                    'message': '新密码不能与当前密码相同',
+                    'details': '请选择一个不同的新密码'
+                }
+            }, 400
+        
+        try:
+            # 更新密码
+            user.password_hash = generate_password_hash(new_password)
+            user.updated_at = datetime.utcnow()
+            db.session.commit()
+            
+            return {
+                'success': True,
+                'message': '密码修改成功'
             }
-        }
+            
+        except Exception as e:
+            db.session.rollback()
+            return {
+                'success': False,
+                'error': {
+                    'code': 'PASSWORD_UPDATE_FAILED',
+                    'message': '密码修改失败',
+                    'details': str(e)
+                }
+            }, 500
 
 # 照片管理接口
 @photos_ns.route('')
@@ -345,16 +505,24 @@ class PhotoList(Resource):
     @api.param('page', '页码', type='integer', default=1)
     @api.param('per_page', '每页数量', type='integer', default=12)
     @api.param('search', '搜索关键词', type='string')
-    @jwt_required()
+    @api.param('X-View-Password', '查看密钥（Header）', _in='header', type='string')
     @handle_errors
     def get(self):
-        """获取用户的照片列表"""
-        current_user_id = get_jwt_identity()
+        """获取照片列表（登录用户或提供查看密钥可查看所有照片，否则只能查看公开照片）"""
         page = request.args.get('page', 1, type=int)
         per_page = min(request.args.get('per_page', 12, type=int), 100)
         search = request.args.get('search', '')
         
-        query = Photo.query.filter_by(user_id=int(current_user_id))
+        # 验证访问权限
+        is_authorized, access_type = verify_view_access()
+        
+        # 根据访问类型构建查询
+        if access_type in ['viewer', 'user']:
+            # 验证通过（查看密钥或登录用户），可以看到所有照片（包括非公开的）
+            query = Photo.query
+        else:
+            # 验证失败，只能看到公开照片
+            query = Photo.query.filter_by(is_public=True)
         
         if search:
             query = query.filter(
@@ -370,7 +538,13 @@ class PhotoList(Resource):
         
         photos_data = []
         for photo in pagination.items:
-            photos_data.append(format_photo_data(photo))
+            photo_data = format_photo_data(photo)
+            # 为查看者和登录用户添加额外信息
+            if access_type in ['viewer', 'user']:
+                photo_data['user_id'] = photo.user_id
+                if photo.user:
+                    photo_data['username'] = photo.user.username
+            photos_data.append(photo_data)
         
         return {
             'success': True,
@@ -381,7 +555,9 @@ class PhotoList(Resource):
                     'per_page': pagination.per_page,
                     'total': pagination.total,
                     'pages': pagination.pages
-                }
+                },
+                'access_type': access_type,
+                'can_view_private': access_type in ['viewer', 'user']
             }
         }
 
@@ -390,12 +566,20 @@ class PhotoDetail(Resource):
     @api.doc(security='Bearer')
     @api.response(200, 'Success')
     @api.response(404, 'Not Found', error_model)
-    @jwt_required()
+    @api.param('X-View-Password', '查看密钥（Header）', _in='header', type='string')
     @handle_errors
     def get(self, photo_id):
-        """获取单张照片详情"""
-        current_user_id = get_jwt_identity()
-        photo = Photo.query.filter_by(id=photo_id, user_id=int(current_user_id)).first()
+        """获取单张照片详情（登录用户或提供查看密钥可查看所有照片，否则只能查看公开照片）"""
+        # 验证访问权限
+        is_authorized, access_type = verify_view_access()
+        
+        # 根据访问类型查询照片
+        if access_type in ['viewer', 'user']:
+            # 验证通过（查看密钥或登录用户），可以查看所有照片
+            photo = Photo.query.filter_by(id=photo_id).first()
+        else:
+            # 验证失败，只能查看公开照片
+            photo = Photo.query.filter_by(id=photo_id, is_public=True).first()
         
         if not photo:
             return {
@@ -403,14 +587,23 @@ class PhotoDetail(Resource):
                 'error': {
                     'code': 'PHOTO_NOT_FOUND',
                     'message': '照片不存在',
-                    'details': '找不到指定的照片'
+                    'details': '找不到指定的照片或照片未公开'
                 }
             }, 404
+        
+        photo_data = format_photo_data(photo)
+        # 为查看者和登录用户添加额外信息
+        if access_type in ['viewer', 'user']:
+            photo_data['user_id'] = photo.user_id
+            if photo.user:
+                photo_data['username'] = photo.user.username
         
         return {
             'success': True,
             'data': {
-                'photo': format_photo_data(photo)
+                'photo': photo_data,
+                'access_type': access_type,
+                'can_view_private': access_type in ['viewer', 'user']
             }
         }
     
@@ -741,121 +934,88 @@ class PublicPhotoDetail(Resource):
             }
         }
 
-# 图片访问接口
-@images_ns.route('/<string:photo_id>/original')
-class ImageOriginal(Resource):
-    @api.response(200, 'Success')
-    @api.response(404, 'Not Found', error_model)
-    @api.response(403, 'Forbidden', error_model)
-    @handle_errors
-    def get(self, photo_id):
-        """获取原图"""
-        return self._get_image(photo_id, 'original')
+def _get_image(photo_id, image_type):
+    """获取图片的通用方法"""
+    from flask import Response
     
-    def _get_image(self, photo_id, image_type):
-        """获取图片的通用方法"""
-        from flask import Response, request as flask_request
-        
-        photo = Photo.query.filter_by(id=photo_id).first()
-        
-        if not photo:
+    photo = Photo.query.filter_by(id=photo_id).first()
+    
+    if not photo:
+        return {
+            'success': False,
+            'error': {
+                'code': 'PHOTO_NOT_FOUND',
+                'message': '照片不存在',
+                'details': '找不到指定的照片'
+            }
+        }, 404
+
+    # 根据图片类型选择OSS key
+    if image_type == 'thumbnail':
+        file_key = photo.oss_thumbnail_key
+    else:
+        file_key = photo.oss_key
+    
+    if not file_key:
+        return {
+            'success': False,
+            'error': {
+                'code': 'FILE_NOT_FOUND',
+                'message': '文件不存在',
+                'details': '图片文件在存储中不存在'
+            }
+        }, 404
+    
+    try:
+        if not oss_service:
             return {
                 'success': False,
                 'error': {
-                    'code': 'PHOTO_NOT_FOUND',
-                    'message': '照片不存在',
-                    'details': '找不到指定的照片'
-                }
-            }, 404
-        
-        # 检查访问权限
-        if not photo.is_public:
-            # 对于缩略图，允许更宽松的访问策略
-            if image_type == 'thumbnail':
-                # 缩略图可以无需认证访问（可选策略）
-                pass
-            else:
-                # 私有照片的原图需要认证
-                try:
-                    from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
-                    verify_jwt_in_request()
-                    current_user_id = get_jwt_identity()
-                    
-                    if int(current_user_id) != photo.user_id:
-                        return {
-                            'success': False,
-                            'error': {
-                                'code': 'ACCESS_DENIED',
-                                'message': '访问被拒绝',
-                                'details': '您没有权限访问此照片'
-                            }
-                        }, 403
-                except:
-                    return {
-                        'success': False,
-                        'error': {
-                            'code': 'AUTHENTICATION_REQUIRED',
-                            'message': '需要身份验证',
-                            'details': '访问私有照片需要登录'
-                        }
-                    }, 403
-        
-        # 根据图片类型选择OSS key
-        if image_type == 'thumbnail':
-            file_key = photo.oss_thumbnail_key
-        else:
-            file_key = photo.oss_key
-        
-        if not file_key:
-            return {
-                'success': False,
-                'error': {
-                    'code': 'FILE_NOT_FOUND',
-                    'message': '文件不存在',
-                    'details': '图片文件在存储中不存在'
-                }
-            }, 404
-        
-        try:
-            if not oss_service:
-                return {
-                    'success': False,
-                    'error': {
-                        'code': 'OSS_UNAVAILABLE',
-                        'message': 'OSS服务不可用',
-                        'details': '图片存储服务暂时不可用'
-                    }
-                }, 500
-            
-            # 对于公开图片，可以重定向到OSS的公开URL
-            if photo.is_public:
-                public_url = oss_service.generate_public_url(file_key)
-                return Response(status=302, headers={'Location': public_url})
-            
-            # 对于私有图片，生成临时签名URL并重定向
-            signed_url = oss_service.generate_signed_url(file_key, expires_in_seconds=3600)  # 1小时过期
-            return Response(status=302, headers={'Location': signed_url})
-            
-        except Exception as e:
-            return {
-                'success': False,
-                'error': {
-                    'code': 'IMAGE_ACCESS_FAILED',
-                    'message': '图片访问失败',
-                    'details': str(e)
+                    'code': 'OSS_UNAVAILABLE',
+                    'message': 'OSS服务不可用',
+                    'details': '图片存储服务暂时不可用'
                 }
             }, 500
 
-@images_ns.route('/<string:photo_id>/thumbnail')
-class ImageThumbnail(Resource):
+        
+        # 生成临时签名URL并重定向
+        signed_url = oss_service.generate_signed_url(file_key, expires_in_seconds=3600)  # 1小时过期
+        return Response(status=302, headers={'Location': signed_url})
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': {
+                'code': 'IMAGE_ACCESS_FAILED',
+                'message': '图片访问失败',
+                'details': str(e)
+            }
+        }, 500
+
+# 图片访问接口
+@images_ns.route('/<string:photo_id>/original')
+class ImageOriginal(Resource):
+    @api.doc(security='Bearer')
     @api.response(200, 'Success')
     @api.response(404, 'Not Found', error_model)
     @api.response(403, 'Forbidden', error_model)
+    @api.param('X-View-Password', '查看密钥（Header）', _in='header', type='string')
     @handle_errors
     def get(self, photo_id):
-        """获取缩略图"""
-        original_resource = ImageOriginal()
-        return original_resource._get_image(photo_id, 'thumbnail')
+        """获取原图（登录用户或提供查看密钥可访问私有图片）"""
+        return _get_image(photo_id, 'original')
+
+@images_ns.route('/<string:photo_id>/thumbnail')
+class ImageThumbnail(Resource):
+    @api.doc(security='Bearer')
+    @api.response(200, 'Success')
+    @api.response(404, 'Not Found', error_model)
+    @api.response(403, 'Forbidden', error_model)
+    @api.param('X-View-Password', '查看密钥（Header）', _in='header', type='string')
+    @handle_errors
+    def get(self, photo_id):
+        """获取缩略图（登录用户或提供查看密钥可访问私有图片）"""
+        return _get_image(photo_id, 'thumbnail')
 
 # 文件服务路由
 # 本地文件访问路由（兼容性保留，建议使用OSS）
