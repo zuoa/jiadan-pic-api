@@ -2,7 +2,7 @@
 import os
 
 # 服务器配置
-bind = "0.0.0.0:5000"
+bind = "0.0.0.0:9000"
 workers = 4
 worker_class = "sync"
 worker_connections = 1000

@@ -3,6 +3,7 @@ import uuid
 import oss2
 from PIL import Image
 import io
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,7 +28,7 @@ class OSSService:
         上传图片到OSS
         :param file_obj: 文件对象
         :param filename: 文件名（可选）
-        :return: (原图URL, 缩略图URL, 文件信息)
+        :return: 文件信息字典
         """
         try:
             # 生成唯一文件名
@@ -57,13 +58,7 @@ class OSSService:
             # 上传缩略图
             self.bucket.put_object(thumbnail_key, thumbnail_content)
             
-            # 生成访问URL
-            original_url = f"https://{self.bucket_name}.{self.endpoint.replace('https://', '')}/{original_key}"
-            thumbnail_url = f"https://{self.bucket_name}.{self.endpoint.replace('https://', '')}/{thumbnail_key}"
-            
             return {
-                'original_url': original_url,
-                'thumbnail_url': thumbnail_url,
                 'file_size': file_size,
                 'file_key': original_key,
                 'thumbnail_key': thumbnail_key
@@ -71,6 +66,41 @@ class OSSService:
             
         except Exception as e:
             raise Exception(f"上传文件到OSS失败: {str(e)}")
+    
+    def generate_signed_url(self, file_key, expires_in_seconds=3600):
+        """
+        生成OSS文件的签名URL
+        :param file_key: 文件key
+        :param expires_in_seconds: 过期时间（秒），默认1小时
+        :return: 签名URL
+        """
+        try:
+            # 生成签名URL
+            url = self.bucket.sign_url('GET', file_key, expires_in_seconds)
+            return url
+        except Exception as e:
+            raise Exception(f"生成签名URL失败: {str(e)}")
+    
+    def generate_public_url(self, file_key):
+        """
+        生成公开访问的URL（仅用于公开图片）
+        注意：这种方式仍然暴露永久URL，建议仅对公开图片使用
+        :param file_key: 文件key
+        :return: 公开URL
+        """
+        return f"https://{self.bucket_name}.{self.endpoint.replace('https://', '')}/{file_key}"
+    
+    def get_image_stream(self, file_key):
+        """
+        直接获取图片文件流
+        :param file_key: 文件key
+        :return: 文件流
+        """
+        try:
+            result = self.bucket.get_object(file_key)
+            return result
+        except Exception as e:
+            raise Exception(f"获取文件流失败: {str(e)}")
     
     def delete_image(self, file_key, thumbnail_key=None):
         """

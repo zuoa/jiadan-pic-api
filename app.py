@@ -60,6 +60,45 @@ def get_file_size_string(size_bytes):
     else:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
 
+def generate_image_urls(photo, request_host=None):
+    """
+    为照片生成访问URL
+    :param photo: 照片对象
+    :param request_host: 请求的主机地址
+    :return: 包含src和thumbnail的字典
+    """
+    if not request_host:
+        request_host = request.host
+    
+    base_url = f"http://{request_host}/api/images"
+    
+    return {
+        'src': f"{base_url}/{photo.id}/original",
+        'thumbnail': f"{base_url}/{photo.id}/thumbnail"
+    }
+
+def format_photo_data(photo, request_host=None):
+    """
+    格式化照片数据，包含动态生成的URL
+    """
+    urls = generate_image_urls(photo, request_host)
+    
+    return {
+        'id': photo.id,
+        'title': photo.title,
+        'description': photo.description,
+        'src': urls['src'],
+        'thumbnail': urls['thumbnail'],
+        'date': photo.date,
+        'size': photo.size,
+        'location': photo.location,
+        'is_public': photo.is_public,
+        'file_name': photo.file_name,
+        'mime_type': photo.mime_type,
+        'created_at': photo.created_at.isoformat() if photo.created_at else None,
+        'updated_at': photo.updated_at.isoformat() if photo.updated_at else None
+    }
+
 # 数据模型
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -78,7 +117,7 @@ class Photo(db.Model):
     src = db.Column(db.String(500), nullable=False)
     thumbnail = db.Column(db.String(500), nullable=False)
     date = db.Column(db.String(10))  # YYYY-MM-DD
-    size = db.Column(db.String(20))
+    size = db.Column(db.Integer)  # 文件大小（字节）
     location = db.Column(db.String(200))
     is_public = db.Column(db.Boolean, default=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
@@ -101,6 +140,10 @@ api.add_namespace(auth_ns)
 api.add_namespace(photos_ns)
 api.add_namespace(public_ns)
 api.add_namespace(dashboard_ns)
+
+# 图片访问命名空间
+images_ns = Namespace('images', description='图片访问接口')
+api.add_namespace(images_ns)
 
 # 定义响应模型
 error_model = api.model('Error', {
@@ -141,7 +184,7 @@ photo_model = api.model('Photo', {
     'src': fields.String(description='照片URL'),
     'thumbnail': fields.String(description='缩略图URL'),
     'date': fields.String(description='拍摄日期'),
-    'size': fields.String(description='文件大小'),
+    'size': fields.Integer(description='文件大小（字节）'),
     'location': fields.String(description='拍摄地点'),
     'is_public': fields.Boolean(description='是否公开'),
     'file_name': fields.String(description='文件名'),
@@ -327,21 +370,7 @@ class PhotoList(Resource):
         
         photos_data = []
         for photo in pagination.items:
-            photos_data.append({
-                'id': photo.id,
-                'title': photo.title,
-                'description': photo.description,
-                'src': photo.src,
-                'thumbnail': photo.thumbnail,
-                'date': photo.date,
-                'size': photo.size,
-                'location': photo.location,
-                'is_public': photo.is_public,
-                'file_name': photo.file_name,
-                'mime_type': photo.mime_type,
-                'created_at': photo.created_at.isoformat() if photo.created_at else None,
-                'updated_at': photo.updated_at.isoformat() if photo.updated_at else None
-            })
+            photos_data.append(format_photo_data(photo))
         
         return {
             'success': True,
@@ -381,21 +410,7 @@ class PhotoDetail(Resource):
         return {
             'success': True,
             'data': {
-                'photo': {
-                    'id': photo.id,
-                    'title': photo.title,
-                    'description': photo.description,
-                    'src': photo.src,
-                    'thumbnail': photo.thumbnail,
-                    'date': photo.date,
-                    'size': photo.size,
-                    'location': photo.location,
-                    'is_public': photo.is_public,
-                    'file_name': photo.file_name,
-                    'mime_type': photo.mime_type,
-                    'created_at': photo.created_at.isoformat() if photo.created_at else None,
-                    'updated_at': photo.updated_at.isoformat() if photo.updated_at else None
-                }
+                'photo': format_photo_data(photo)
             }
         }
     
@@ -441,21 +456,7 @@ class PhotoDetail(Resource):
                 'success': True,
                 'message': '照片信息更新成功',
                 'data': {
-                    'photo': {
-                        'id': photo.id,
-                        'title': photo.title,
-                        'description': photo.description,
-                        'src': photo.src,
-                        'thumbnail': photo.thumbnail,
-                        'date': photo.date,
-                        'size': photo.size,
-                        'location': photo.location,
-                        'is_public': photo.is_public,
-                        'file_name': photo.file_name,
-                        'mime_type': photo.mime_type,
-                        'created_at': photo.created_at.isoformat() if photo.created_at else None,
-                        'updated_at': photo.updated_at.isoformat() if photo.updated_at else None
-                    }
+                    'photo': format_photo_data(photo)
                 }
             }
         except Exception as e:
@@ -591,8 +592,6 @@ class PhotoUpload(Resource):
             # 上传到OSS
             upload_result = oss_service.upload_image(file, unique_filename)
             
-            file_size_str = get_file_size_string(upload_result['file_size'])
-            
             # 获取表单数据
             title = request.form.get('title', '未命名照片')
             description = request.form.get('description', '')
@@ -600,14 +599,14 @@ class PhotoUpload(Resource):
             location = request.form.get('location', '')
             is_public = request.form.get('is_public', 'false').lower() == 'true'
             
-            # 创建照片记录
+            # 创建照片记录 - 不再存储直接URL，而是存储OSS key
             photo = Photo(
                 title=title,
                 description=description,
-                src=upload_result['original_url'],
-                thumbnail=upload_result['thumbnail_url'],
+                src='',  # 将通过API动态生成
+                thumbnail='',  # 将通过API动态生成
                 date=date,
-                size=file_size_str,
+                size=upload_result['file_size'],  # 存储原始字节数
                 location=location,
                 is_public=is_public,
                 user_id=int(current_user_id),
@@ -624,21 +623,7 @@ class PhotoUpload(Resource):
                 'success': True,
                 'message': '照片上传成功',
                 'data': {
-                    'photo': {
-                        'id': photo.id,
-                        'title': photo.title,
-                        'description': photo.description,
-                        'src': photo.src,
-                        'thumbnail': photo.thumbnail,
-                        'date': photo.date,
-                        'size': photo.size,
-                        'location': photo.location,
-                        'is_public': photo.is_public,
-                        'file_name': photo.file_name,
-                        'mime_type': photo.mime_type,
-                        'created_at': photo.created_at.isoformat() if photo.created_at else None,
-                        'updated_at': photo.updated_at.isoformat() if photo.updated_at else None
-                    }
+                    'photo': format_photo_data(photo)
                 }
             }
             
@@ -672,17 +657,9 @@ class DashboardStats(Resource):
         photos = Photo.query.filter_by(user_id=int(current_user_id)).all()
         total_size_bytes = 0
         for photo in photos:
-            # 优先使用OSS文件信息
-            if photo.oss_key and oss_service:
-                try:
-                    file_info = oss_service.get_file_info(photo.oss_key)
-                    total_size_bytes += file_info['size']
-                except:
-                    # 如果获取OSS文件信息失败，尝试从本地文件获取
-                    if photo.file_path and os.path.exists(photo.file_path):
-                        total_size_bytes += os.path.getsize(photo.file_path)
-            elif photo.file_path and os.path.exists(photo.file_path):
-                total_size_bytes += os.path.getsize(photo.file_path)
+            # 直接使用存储的文件大小
+            if photo.size:
+                total_size_bytes += photo.size
         
         total_size_str = get_file_size_string(total_size_bytes)
         
@@ -693,21 +670,7 @@ class DashboardStats(Resource):
         
         recent_uploads = []
         for photo in recent_photos:
-            recent_uploads.append({
-                'id': photo.id,
-                'title': photo.title,
-                'description': photo.description,
-                'src': photo.src,
-                'thumbnail': photo.thumbnail,
-                'date': photo.date,
-                'size': photo.size,
-                'location': photo.location,
-                'is_public': photo.is_public,
-                'file_name': photo.file_name,
-                'mime_type': photo.mime_type,
-                'created_at': photo.created_at.isoformat() if photo.created_at else None,
-                'updated_at': photo.updated_at.isoformat() if photo.updated_at else None
-            })
+            recent_uploads.append(format_photo_data(photo))
         
         return {
             'success': True,
@@ -737,21 +700,7 @@ class PublicPhotoList(Resource):
         
         photos_data = []
         for photo in pagination.items:
-            photos_data.append({
-                'id': photo.id,
-                'title': photo.title,
-                'description': photo.description,
-                'src': photo.src,
-                'thumbnail': photo.thumbnail,
-                'date': photo.date,
-                'size': photo.size,
-                'location': photo.location,
-                'is_public': photo.is_public,
-                'file_name': photo.file_name,
-                'mime_type': photo.mime_type,
-                'created_at': photo.created_at.isoformat() if photo.created_at else None,
-                'updated_at': photo.updated_at.isoformat() if photo.updated_at else None
-            })
+            photos_data.append(format_photo_data(photo))
         
         return {
             'success': True,
@@ -788,23 +737,125 @@ class PublicPhotoDetail(Resource):
         return {
             'success': True,
             'data': {
-                'photo': {
-                    'id': photo.id,
-                    'title': photo.title,
-                    'description': photo.description,
-                    'src': photo.src,
-                    'thumbnail': photo.thumbnail,
-                    'date': photo.date,
-                    'size': photo.size,
-                    'location': photo.location,
-                    'is_public': photo.is_public,
-                    'file_name': photo.file_name,
-                    'mime_type': photo.mime_type,
-                    'created_at': photo.created_at.isoformat() if photo.created_at else None,
-                    'updated_at': photo.updated_at.isoformat() if photo.updated_at else None
-                }
+                'photo': format_photo_data(photo)
             }
         }
+
+# 图片访问接口
+@images_ns.route('/<string:photo_id>/original')
+class ImageOriginal(Resource):
+    @api.response(200, 'Success')
+    @api.response(404, 'Not Found', error_model)
+    @api.response(403, 'Forbidden', error_model)
+    @handle_errors
+    def get(self, photo_id):
+        """获取原图"""
+        return self._get_image(photo_id, 'original')
+    
+    def _get_image(self, photo_id, image_type):
+        """获取图片的通用方法"""
+        from flask import Response, request as flask_request
+        
+        photo = Photo.query.filter_by(id=photo_id).first()
+        
+        if not photo:
+            return {
+                'success': False,
+                'error': {
+                    'code': 'PHOTO_NOT_FOUND',
+                    'message': '照片不存在',
+                    'details': '找不到指定的照片'
+                }
+            }, 404
+        
+        # 检查访问权限
+        if not photo.is_public:
+            # 对于缩略图，允许更宽松的访问策略
+            if image_type == 'thumbnail':
+                # 缩略图可以无需认证访问（可选策略）
+                pass
+            else:
+                # 私有照片的原图需要认证
+                try:
+                    from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
+                    verify_jwt_in_request()
+                    current_user_id = get_jwt_identity()
+                    
+                    if int(current_user_id) != photo.user_id:
+                        return {
+                            'success': False,
+                            'error': {
+                                'code': 'ACCESS_DENIED',
+                                'message': '访问被拒绝',
+                                'details': '您没有权限访问此照片'
+                            }
+                        }, 403
+                except:
+                    return {
+                        'success': False,
+                        'error': {
+                            'code': 'AUTHENTICATION_REQUIRED',
+                            'message': '需要身份验证',
+                            'details': '访问私有照片需要登录'
+                        }
+                    }, 403
+        
+        # 根据图片类型选择OSS key
+        if image_type == 'thumbnail':
+            file_key = photo.oss_thumbnail_key
+        else:
+            file_key = photo.oss_key
+        
+        if not file_key:
+            return {
+                'success': False,
+                'error': {
+                    'code': 'FILE_NOT_FOUND',
+                    'message': '文件不存在',
+                    'details': '图片文件在存储中不存在'
+                }
+            }, 404
+        
+        try:
+            if not oss_service:
+                return {
+                    'success': False,
+                    'error': {
+                        'code': 'OSS_UNAVAILABLE',
+                        'message': 'OSS服务不可用',
+                        'details': '图片存储服务暂时不可用'
+                    }
+                }, 500
+            
+            # 对于公开图片，可以重定向到OSS的公开URL
+            if photo.is_public:
+                public_url = oss_service.generate_public_url(file_key)
+                return Response(status=302, headers={'Location': public_url})
+            
+            # 对于私有图片，生成临时签名URL并重定向
+            signed_url = oss_service.generate_signed_url(file_key, expires_in_seconds=3600)  # 1小时过期
+            return Response(status=302, headers={'Location': signed_url})
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': {
+                    'code': 'IMAGE_ACCESS_FAILED',
+                    'message': '图片访问失败',
+                    'details': str(e)
+                }
+            }, 500
+
+@images_ns.route('/<string:photo_id>/thumbnail')
+class ImageThumbnail(Resource):
+    @api.response(200, 'Success')
+    @api.response(404, 'Not Found', error_model)
+    @api.response(403, 'Forbidden', error_model)
+    @handle_errors
+    def get(self, photo_id):
+        """获取缩略图"""
+        original_resource = ImageOriginal()
+        return original_resource._get_image(photo_id, 'thumbnail')
 
 # 文件服务路由
 # 本地文件访问路由（兼容性保留，建议使用OSS）
@@ -857,6 +908,6 @@ init_database()
 if __name__ == '__main__':
     # 开发环境启动
     print("开发环境启动...")
-    print("API文档地址: http://localhost:5000/api/docs/")
+    print("API文档地址: http://localhost:9000/api/docs/")
     print("默认账户: admin / admin123")
-    app.run(debug=True, host='0.0.0.0', port=5000) 
+    app.run(debug=True, host='0.0.0.0', port=9000)
