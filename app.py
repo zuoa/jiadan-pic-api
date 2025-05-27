@@ -19,14 +19,13 @@ load_dotenv()
 app = Flask(__name__)
 
 # 配置
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///photos.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your-jwt-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
 app.config['UPLOAD_FOLDER'] = os.getenv('UPLOAD_FOLDER', 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 10485760))  # 10MB
-app.config['VIEW_PASSWORD'] = os.getenv('VIEW_PASSWORD', 'admin-view-password-123')  # 查看密钥
+app.config['VIEW_PASSWORD'] = os.getenv('VIEW_PASSWORD', 'vaneljd')  # 查看密钥
 
 # 初始化扩展
 db = SQLAlchemy(app)
@@ -138,7 +137,7 @@ class User(db.Model):
 
 class Photo(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    title = db.Column(db.String(200), nullable=False, default='未命名照片')
+    title = db.Column(db.String(200), nullable=False, default='')
     description = db.Column(db.Text)
     src = db.Column(db.String(500), nullable=False)
     thumbnail = db.Column(db.String(500), nullable=False)
@@ -786,7 +785,7 @@ class PhotoUpload(Resource):
             upload_result = oss_service.upload_image(file, unique_filename)
             
             # 获取表单数据
-            title = request.form.get('title', '未命名照片')
+            title = request.form.get('title', 'Unnamed')
             description = request.form.get('description', '')
             date = request.form.get('date', '')
             location = request.form.get('location', '')
