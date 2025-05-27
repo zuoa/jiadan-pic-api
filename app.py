@@ -1030,7 +1030,7 @@ def init_database():
         db.create_all()
         
         # 检查是否存在默认用户
-        if not User.query.filter_by(username='admin').first():
+        if not User.query.filter_by(username='vane').first():
             admin_user = User(
                 username='vane',
                 email='admin@example.com',
