@@ -25,7 +25,8 @@ app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your-jwt-secret-key'
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
 app.config['UPLOAD_FOLDER'] = os.getenv('UPLOAD_FOLDER', 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 10485760))  # 10MB
-app.config['VIEW_PASSWORD'] = os.getenv('VIEW_PASSWORD', 'vaneljd')  # 查看密钥
+app.config['VIEW_PASSWORD'] = os.getenv('VIEW_PASSWORD', '563538')  # 查看密钥
+app.config['ADMIN_PASSWORD'] = os.getenv('ADMIN_PASSWORD', 'vaneljd')  # 查看密钥
 
 # 初始化扩展
 db = SQLAlchemy(app)
@@ -1031,13 +1032,13 @@ def init_database():
         # 检查是否存在默认用户
         if not User.query.filter_by(username='admin').first():
             admin_user = User(
-                username='admin',
+                username='vane',
                 email='admin@example.com',
-                password_hash=generate_password_hash('admin123')
+                password_hash=generate_password_hash(app.config['ADMIN_PASSWORD'])
             )
             db.session.add(admin_user)
             db.session.commit()
-            print('默认管理员账户创建成功: admin/admin123')
+            print(f'默认管理员账户创建成功: vane/{app.config["ADMIN_PASSWORD"]}')
 
 # JWT 错误处理
 @app.errorhandler(422)
