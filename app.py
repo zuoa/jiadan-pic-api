@@ -92,14 +92,14 @@ def generate_image_urls(photo, request_host=None):
     :param request_host: 请求的主机地址
     :return: 包含src和thumbnail的字典
     """
-    if not request_host:
-        request_host = request.host
-    
-    base_url = f"http://{request_host}/api/images"
-    
+    # if not request_host:
+    #     request_host = os.getenv("GALLERY_HOST", "/api/")
+    #
+    # base_url = f"http://{request_host}/api/images"
+    #
     return {
-        'src': f"{base_url}/{photo.id}/original",
-        'thumbnail': f"{base_url}/{photo.id}/thumbnail"
+        'src': f"/api/images/{photo.id}/original",
+        'thumbnail': f"/api/images/{photo.id}/thumbnail"
     }
 
 def format_photo_data(photo, request_host=None):
